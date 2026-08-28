@@ -11,13 +11,15 @@ namespace ImageMagick;
 internal class AsyncStreamWrapper : StreamWrapperBase
 {
     private readonly Stream _stream;
-    private readonly SemaphoreSlim _performRead = new(0, 1);
-    private readonly SemaphoreSlim _readDone = new(0, 1);
-    private readonly SemaphoreSlim _performWrite = new(0, 1);
-    private readonly SemaphoreSlim _writeDone = new(0, 1);
+
+    // unbounded: cancellation can leave a permit unconsumed, and a capped semaphore would then throw
+    private readonly SemaphoreSlim _performRead = new(0);
+    private readonly SemaphoreSlim _readDone = new(0);
+    private readonly SemaphoreSlim _performWrite = new(0);
+    private readonly SemaphoreSlim _writeDone = new(0);
     private int _readCount = 0;
     private int _writeCount = 0;
-    private bool _exceptionThrown;
+    private volatile bool _exceptionThrown;
 
     public AsyncStreamWrapper(Stream stream)
         : base(stream)
@@ -106,15 +108,16 @@ internal class AsyncStreamWrapper : StreamWrapperBase
 
     protected override int Read(int count)
     {
+        // 0, not -1: ImageMagick uses the result as an unsigned length without checking the sign
         if (_exceptionThrown)
-            return -1;
+            return 0;
 
         _readCount = count;
         _performRead.Release();
         _readDone.Wait();
 
         if (_exceptionThrown)
-            return -1;
+            return 0;
 
         return _readCount;
     }
@@ -150,9 +153,9 @@ internal class AsyncStreamWrapper : StreamWrapperBase
             }
             catch
             {
+                // release unconditionally, or a native callback already in Read() never wakes
                 _exceptionThrown = true;
-                if (_performRead.Wait(0))
-                    _readDone.Release();
+                _readDone.Release();
                 return;
             }
 
@@ -185,8 +188,7 @@ internal class AsyncStreamWrapper : StreamWrapperBase
             catch
             {
                 _exceptionThrown = true;
-                if (_performWrite.Wait(0))
-                    _writeDone.Release();
+                _writeDone.Release();
                 return;
             }
 

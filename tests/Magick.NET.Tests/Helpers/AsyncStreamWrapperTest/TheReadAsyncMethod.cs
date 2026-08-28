@@ -113,6 +113,35 @@ public partial class AsyncStreamWrapperTest
         }
 
         [Fact]
+        public async Task ShouldNotReturnNegativeCountWhenOperationIsCancelled()
+        {
+            using var memStream = new MemoryStream(new byte[1024]);
+            using var stream = new BlockingReadStream(memStream);
+            using var wrapper = AsyncStreamWrapper.CreateForReading(stream);
+
+            using var cancellationTokenSource = new CancellationTokenSource();
+
+            // asserting inside the action is unreliable, it is swallowed when cancelled
+            var count = long.MinValue;
+
+            unsafe void ReadSync()
+            {
+                var buffer = new byte[10];
+                fixed (byte* p = buffer)
+                {
+                    count = wrapper.Read((IntPtr)p, (UIntPtr)10, IntPtr.Zero);
+                }
+            }
+
+            cancellationTokenSource.CancelAfter(100);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wrapper.ReadAsync(ReadSync, cancellationTokenSource.Token));
+
+            // ImageMagick uses this as an unsigned length, so a negative value is unsafe
+            Assert.True(count >= 0, $"count was {count}");
+        }
+
+        [Fact]
         public async Task ShouldThrowExceptionWhenOperationIsCancelledAndActionThrowsException()
         {
             using var stream = new MemoryStream();
